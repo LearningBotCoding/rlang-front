@@ -1,0 +1,203 @@
+import os
+
+# Causes SCons to import the parent environment into subordinate process execution. This
+# can lead to non-reproducible builds... use with caution.
+
+ENV=os.environ
+
+# Configures the build to use XCode targeting macOS
+
+import subprocess
+import SCons
+
+CC = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'clang']).decode('utf-8').strip()
+CXX = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'clang++']).decode('utf-8').strip()
+DSYMUTIL = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'dsymutil']).decode('utf-8').strip()
+STRIP = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'strip']).decode('utf-8').strip()
+
+visibility_support = SCons.Script.Main.GetOption('visibility-support')
+if visibility_support != "off" and SCons.Script.Main.GetOption('link-model').startswith('dynamic'):
+    TAPI = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'tapi']).decode('utf-8').strip()
+
+sdk_path = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).decode('utf-8').strip()
+
+CCFLAGS = "-isysroot {} -mmacosx-version-min=10.14 -target darwin18.0.0 -arch x86_64".format(sdk_path)
+LINKFLAGS = "-Wl,-syslibroot,{} -mmacosx-version-min=10.14 -target darwin18.0.0 -arch x86_64".format(sdk_path)
+
+# Configures the build to use XCode targeting macOS
+
+import subprocess
+import SCons
+
+CC = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'clang']).decode('utf-8').strip()
+CXX = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'clang++']).decode('utf-8').strip()
+DSYMUTIL = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'dsymutil']).decode('utf-8').strip()
+STRIP = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'strip']).decode('utf-8').strip()
+
+visibility_support = SCons.Script.Main.GetOption('visibility-support')
+if visibility_support != "off" and SCons.Script.Main.GetOption('link-model').startswith('dynamic'):
+    TAPI = subprocess.check_output(['xcrun', '-f', '--sdk', 'macosx', 'tapi']).decode('utf-8').strip()
+
+sdk_path = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).decode('utf-8').strip()
+
+CCFLAGS = "-isysroot {} -mmacosx-version-min=11.0 --target=darwin20.0.0 -arch arm64".format(sdk_path)
+LINKFLAGS = "-Wl,-syslibroot,{} -mmacosx-version-min=11.0 --target=darwin20.0.0 -arch arm64".format(sdk_path)
+
+import os
+
+# Causes SCons to set the C and C++ compilers via the CC and CXX shell environment variables
+
+CC=os.environ['CC']
+CXX=os.environ['CXX']
+
+def short_describe():
+    import os
+    import subprocess
+    with open(os.devnull, "r+") as devnull:
+        proc = subprocess.Popen("git describe --abbrev=0",
+            stdout=subprocess.PIPE,
+            stderr=devnull,
+            stdin=devnull,
+            shell=True)
+        return proc.communicate()[0].decode('utf-8').strip()[1:]
+
+MONGO_GIT_HASH="unknown"
+MONGO_VERSION=short_describe()
+
+LINKFLAGS="-fuse-ld=gold -fno-use-linker-plugin -Wl,-z,norelro -Wl,--incremental"
+
+# Configures the build to use Toolchain Clang to build with icecream
+# cross compiling for macOS, using homebrew for local and the MongoDB
+# toolchain for remote. You will need brew's llvm@7 installed.
+
+import os
+import subprocess
+import SCons.Defaults
+
+exec(open('etc/scons/xcode_macosx.vars', "rb").read())
+
+# TODO: When we bump the toolchain, these need to move to an equivalent
+# LLVM version. Currently, the stable MongoDB toolchain (v3) uses clang 7.
+CC = "/usr/local/opt/llvm@7/bin/clang"
+CXX = "/usr/local/opt/llvm@7/bin/clang++"
+
+for tool in [CC, CXX]:
+    try:
+        result = subprocess.check_output([tool, '--version']).decode('utf-8').strip()
+    except subprocess.CalledProcessError as e:
+        print('Failed while invoking toolchain binary ' + CXX + ': ' + str(e.output))
+        print('Please ensure that the homebrew llvm@7 package is correctly installed')
+        SCons.Script.Exit(-1)
+    except OSError as e:
+        print('Failed to invoke toolchain binary ' + CXX + ': ' + str(e))
+        print('Please install the homebrew llvm@7 package')
+        SCons.Script.Exit(-1)
+
+exec(open('etc/scons/icecream_remote_mongodbtoolchain.vars', "rb").read())
+
+ICECC = "icecc"
+ICECC_VERSION = "http://mongodbtoolchain.build.10gen.cc/icecream/ubuntu1604/x86_64/latest"
+ICECC_VERSION_ARCH = "x86_64"
+
+# Configures the build to use Toolchain Clang to build with icecream
+# cross compiling for macOS, using Xcode for local and the MongoDB
+# toolchain for remote. This will only work if your Xcode version
+# closely matches the mongodbtoolchain version w.r.t. clang. Currently
+# the MongoDB toolchain v3 uses clang-7, so this would only work with
+# XCode 10.
+
+exec(open('etc/scons/xcode_macosx.vars', "rb").read())
+exec(open('etc/scons/icecream_remote_mongodbtoolchain.vars', "rb").read())
+
+exec(open('etc/scons/mongodbtoolchain_v3_clang.vars', "rb").read())
+
+exec(open('etc/scons/mongodbtoolchain_v3_gcc.vars', "rb").read())
+
+exec(open('etc/scons/mongodbtoolchain_stable_clang.vars', "rb").read())
+
+exec(open('etc/scons/mongodbtoolchain_stable_gcc.vars', "rb").read())
+
+# Configures the build to use the GCC toolchain in /opt/mongodbtoolchain/v3
+
+import os
+import subprocess
+import SCons.Defaults
+
+toolchain_root = SCons.Script.Main.GetOption('toolchain-root')
+if not toolchain_root:
+   toolchain_root = '/opt/mongodbtoolchain/v3'
+
+toolchain_bindir = os.path.join(toolchain_root, 'bin')
+
+# Get the default SCons path as a list
+default_path = SCons.Defaults.DefaultEnvironment()['ENV']['PATH'].split(os.pathsep)
+
+# Put the toolchain path first so we prefer all tools from there in subprocs
+ENV = {
+    'PATH' : os.pathsep.join([toolchain_bindir] + default_path)
+}
+
+# Set any Variables for Tools from the toolchain here. Technically, we
+# shouldn't need the full paths since SCons will find the toolchain
+# ones first, but we don't want to accidentally get the system version
+# if, say, the toolchain is missing. Also, it is clearer that we are
+# getting the right toolchain in build log output when the path is
+# printed for each compiler invocation.
+
+CC = os.path.join(toolchain_bindir, 'clang')
+CXX = os.path.join(toolchain_bindir, 'clang++')
+
+try:
+   AR = subprocess.check_output([CXX, '-print-prog-name=ar']).decode('utf-8').strip()
+   AS = subprocess.check_output([CXX, '-print-prog-name=as']).decode('utf-8').strip()
+   OBJCOPY = subprocess.check_output([CXX, '-print-prog-name=objcopy']).decode('utf-8').strip()
+   LLVM_SYMBOLIZER = subprocess.check_output([CXX, '-print-prog-name=llvm-symbolizer']).decode('utf-8').strip()
+except subprocess.CalledProcessError as e:
+   print("Failed while invoking toolchain binary " + CXX + ": " + e.output)
+   SCons.Script.Exit(-1)
+except OSError as e:
+   print("Failed to invoke toolchain binary " + CXX + ": " + str(e))
+   SCons.Script.Exit(-1)
+
+# Configures the build to use the GCC toolchain in /opt/mongodbtoolchain/v3
+
+import os
+import subprocess
+import SCons.Defaults
+
+toolchain_root = SCons.Script.Main.GetOption('toolchain-root')
+if not toolchain_root:
+   toolchain_root = '/opt/mongodbtoolchain/v3'
+
+toolchain_bindir = os.path.join(toolchain_root, 'bin')
+
+# Get the default SCons path as a list
+default_path = SCons.Defaults.DefaultEnvironment()['ENV']['PATH'].split(os.pathsep)
+
+# Put the toolchain path first so we prefer all tools from there in subprocs
+ENV = {
+    'PATH' : os.pathsep.join([toolchain_bindir] + default_path)
+}
+
+# Set any Variables for Tools from the toolchain here. Technically, we
+# shouldn't need the full paths since SCons will find the toolchain
+# ones first, but we don't want to accidentally get the system version
+# if, say, the toolchain is missing. Also, it is clearer that we are
+# getting the right toolchain in build log output when the path is
+# printed for each compiler invocation.
+
+CC = os.path.join(toolchain_bindir, 'gcc')
+CXX = os.path.join(toolchain_bindir, 'g++')
+
+try:
+   AR = subprocess.check_output([CXX, '-print-prog-name=ar']).decode('utf-8').strip()
+   AS = subprocess.check_output([CXX, '-print-prog-name=as']).decode('utf-8').strip()
+   OBJCOPY = subprocess.check_output([CXX, '-print-prog-name=objcopy']).decode('utf-8').strip()
+except subprocess.CalledProcessError as e:
+   print('Failed while invoking toolchain binary ' + CXX + ': ' + str(e.output))
+   SCons.Script.Exit(-1)
+except OSError as e:
+   print('Failed to invoke toolchain binary ' + CXX + ': ' + str(e))
+   SCons.Script.Exit(-1)
+
+MSVC_USE_SCRIPT=False
