@@ -1,0 +1,1362 @@
+#!/usr/bin/env python3
+#
+# Copyright 2021 MongoDB Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be included
+# in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+# LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+# WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+"""Unittests for the graph analyzer."""
+
+import json
+import sys
+import unittest
+
+import networkx
+
+import libdeps.analyzer
+from libdeps.graph import LibdepsGraph, EdgeProps, NodeProps, CountTypes
+
+
+def add_node(graph, node, builder):
+    """Add a node to the graph."""
+
+    graph.add_nodes_from([(node, {NodeProps.bin_type.name: builder})])
+
+
+def add_edge(graph, from_node, to_node, **kwargs):
+    """Add an edge to the graph."""
+
+    edge_props = {
+        EdgeProps.direct.name: kwargs[EdgeProps.direct.name],
+        EdgeProps.visibility.name: int(kwargs[EdgeProps.visibility.name]),
+    }
+
+    graph.add_edges_from([(from_node, to_node, edge_props)])
+
+
+def get_double_diamond_mock_graph():
+    """Construct a mock graph which covers a double diamond structure."""
+
+    graph = LibdepsGraph()
+    graph.graph['build_dir'] = '.'
+    graph.graph['graph_schema_version'] = 2
+    graph.graph['deptypes'] = '''{
+        "Global": 0,
+        "Public": 1,
+        "Private": 2,
+        "Interface": 3,
+    }'''
+
+    # builds a graph of mostly public edges that looks like this:
+    #
+    #
+    #                  /lib3.so               /lib7.so
+    #                 |       \              |       \
+    # <-lib1.so--lib2.so       lib5.so--lib6.so       lib9.so
+    #                 |       /              |       /
+    #                  \lib4.so               \lib8.so
+    #
+
+    add_node(graph, 'lib1.so', 'SharedLibrary')
+    add_node(graph, 'lib2.so', 'SharedLibrary')
+    add_node(graph, 'lib3.so', 'SharedLibrary')
+    add_node(graph, 'lib4.so', 'SharedLibrary')
+    add_node(graph, 'lib5.so', 'SharedLibrary')
+    add_node(graph, 'lib6.so', 'SharedLibrary')
+    add_node(graph, 'lib7.so', 'SharedLibrary')
+    add_node(graph, 'lib8.so', 'SharedLibrary')
+    add_node(graph, 'lib9.so', 'SharedLibrary')
+
+    add_edge(graph, 'lib1.so', 'lib2.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib3.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib4.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib5.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib5.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib5.so', 'lib6.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib6.so', 'lib7.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib6.so', 'lib8.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib7.so', 'lib9.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib8.so', 'lib9.so', direct=True, visibility=graph.get_deptype('Public'))
+
+    # trans for 3 and 4
+    add_edge(graph, 'lib1.so', 'lib3.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib1.so', 'lib4.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 5
+    add_edge(graph, 'lib1.so', 'lib5.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib5.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 6
+    add_edge(graph, 'lib1.so', 'lib6.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib6.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib6.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib6.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 7
+    add_edge(graph, 'lib1.so', 'lib7.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib7.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib7.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib7.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib5.so', 'lib7.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 8
+    add_edge(graph, 'lib1.so', 'lib8.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib8.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib8.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib8.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib5.so', 'lib8.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 9
+    add_edge(graph, 'lib1.so', 'lib9.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib9.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib9.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib9.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib5.so', 'lib9.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib6.so', 'lib9.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    return graph
+
+
+def get_basic_mock_graph():
+    """Construct a mock graph which covers most cases and is easy to understand."""
+
+    graph = LibdepsGraph()
+    graph.graph['build_dir'] = '.'
+    graph.graph['graph_schema_version'] = 2
+    graph.graph['deptypes'] = '''{
+        "Global": 0,
+        "Public": 1,
+        "Private": 2,
+        "Interface": 3,
+    }'''
+
+    # builds a graph of mostly public edges:
+    #
+    #                         /-lib5.so
+    #                  /lib3.so
+    #                 |       \-lib6.so
+    # <-lib1.so--lib2.so
+    #                 |       /-lib5.so (private)
+    #                  \lib4.so
+    #                         \-lib6.so
+
+    # nodes
+    add_node(graph, 'lib1.so', 'SharedLibrary')
+    add_node(graph, 'lib2.so', 'SharedLibrary')
+    add_node(graph, 'lib3.so', 'SharedLibrary')
+    add_node(graph, 'lib4.so', 'SharedLibrary')
+    add_node(graph, 'lib5.so', 'SharedLibrary')
+    add_node(graph, 'lib6.so', 'SharedLibrary')
+
+    # direct edges
+    add_edge(graph, 'lib1.so', 'lib2.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib3.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib2.so', 'lib4.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib6.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib5.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib3.so', 'lib6.so', direct=True, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib4.so', 'lib5.so', direct=True, visibility=graph.get_deptype('Private'))
+
+    # trans for 3
+    add_edge(graph, 'lib1.so', 'lib3.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 4
+    add_edge(graph, 'lib1.so', 'lib4.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 5
+    add_edge(graph, 'lib2.so', 'lib5.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib1.so', 'lib5.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    # trans for 6
+    add_edge(graph, 'lib2.so', 'lib6.so', direct=False, visibility=graph.get_deptype('Public'))
+    add_edge(graph, 'lib1.so', 'lib6.so', direct=False, visibility=graph.get_deptype('Public'))
+
+    return graph
+
+
+class Tests(unittest.TestCase):
+    """Common unittest for the libdeps graph analyzer module."""
+
+    def run_analysis(self, expected, graph, algo, *args):
+        """Check results of analysis generically."""
+
+        analysis = [algo(graph, *args)]
+        ga = libdeps.analyzer.LibdepsGraphAnalysis(analysis)
+        printer = libdeps.analyzer.GaJsonPrinter(ga)
+        result = json.loads(printer.get_json())
+        self.assertEqual(result, expected)
+
+    def run_counts(self, expected, graph):
+        """Check results of counts generically."""
+
+        analysis = libdeps.analyzer.counter_factory(
+            graph,
+            [name[0] for name in CountTypes.__members__.items() if name[0] != CountTypes.ALL.name])
+        ga = libdeps.analyzer.LibdepsGraphAnalysis(analysis)
+        printer = libdeps.analyzer.GaJsonPrinter(ga)
+        result = json.loads(printer.get_json())
+        self.assertEqual(result, expected)
+
+    def test_graph_paths_basic(self):
+        """Test for the GraphPaths analyzer on a basic graph."""
+
+        libdeps_graph = LibdepsGraph(get_basic_mock_graph())
+
+        expected_result = {
+            "GRAPH_PATHS": {
+                "('lib1.so', 'lib6.so')": [["lib1.so", "lib2.so", "lib3.so", "lib6.so"],
+                                           ["lib1.so", "lib2.so", "lib4.so", "lib6.so"]]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.GraphPaths, 'lib1.so',
+                          'lib6.so')
+
+        expected_result = {"GRAPH_PATHS": {"('lib4.so', 'lib5.so')": []}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.GraphPaths, 'lib4.so',
+                          'lib5.so')
+
+        expected_result = {
+            "GRAPH_PATHS": {"('lib2.so', 'lib5.so')": [['lib2.so', 'lib3.so', 'lib5.so']]}
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.GraphPaths, 'lib2.so',
+                          'lib5.so')
+
+    def test_graph_paths_double_diamond(self):
+        """Test path algorithm on the double diamond graph."""
+
+        libdeps_graph = LibdepsGraph(get_double_diamond_mock_graph())
+
+        expected_result = {
+            "GRAPH_PATHS": {
+                "('lib1.so', 'lib9.so')":
+                    [["lib1.so", "lib2.so", "lib3.so", "lib5.so", "lib6.so", "lib7.so", "lib9.so"],
+                     ["lib1.so", "lib2.so", "lib3.so", "lib5.so", "lib6.so", "lib8.so", "lib9.so"],
+                     ["lib1.so", "lib2.so", "lib4.so", "lib5.so", "lib6.so", "lib7.so", "lib9.so"],
+                     ["lib1.so", "lib2.so", "lib4.so", "lib5.so", "lib6.so", "lib8.so", "lib9.so"]]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.GraphPaths, 'lib1.so',
+                          'lib9.so')
+
+        expected_result = {
+            "GRAPH_PATHS": {
+                "('lib5.so', 'lib9.so')": [["lib5.so", "lib6.so", "lib7.so", "lib9.so"],
+                                           ["lib5.so", "lib6.so", "lib8.so", "lib9.so"]]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.GraphPaths, 'lib5.so',
+                          'lib9.so')
+
+        expected_result = {
+            "GRAPH_PATHS": {
+                "('lib2.so', 'lib6.so')": [["lib2.so", "lib3.so", "lib5.so", "lib6.so"],
+                                           ["lib2.so", "lib4.so", "lib5.so", "lib6.so"]]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.GraphPaths, 'lib2.so',
+                          'lib6.so')
+
+    def test_critical_paths_basic(self):
+        """Test for the CriticalPaths for basic graph."""
+
+        libdeps_graph = LibdepsGraph(get_basic_mock_graph())
+
+        expected_result = {"CRITICAL_EDGES": {"('lib1.so', 'lib6.so')": [["lib1.so", "lib2.so"]]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CriticalEdges, 'lib1.so',
+                          'lib6.so')
+
+        expected_result = {"CRITICAL_EDGES": {"('lib1.so', 'lib5.so')": [["lib1.so", "lib2.so"]]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CriticalEdges, 'lib1.so',
+                          'lib5.so')
+
+    def test_critical_paths_double_diamond(self):
+        """Test for the CriticalPaths for double diamond graph."""
+
+        libdeps_graph = LibdepsGraph(get_double_diamond_mock_graph())
+
+        expected_result = {"CRITICAL_EDGES": {"('lib1.so', 'lib9.so')": [["lib1.so", "lib2.so"]]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CriticalEdges, 'lib1.so',
+                          'lib9.so')
+
+        expected_result = {"CRITICAL_EDGES": {"('lib2.so', 'lib9.so')": [["lib5.so", "lib6.so"]]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CriticalEdges, 'lib2.so',
+                          'lib9.so')
+
+    def test_direct_depends_basic(self):
+        """Test for the DirectDependents for basic graph."""
+
+        libdeps_graph = LibdepsGraph(get_basic_mock_graph())
+
+        expected_result = {"DIRECT_DEPENDS": {"lib6.so": ["lib3.so", "lib4.so"]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.DirectDependents,
+                          'lib6.so')
+
+        expected_result = {'DIRECT_DEPENDS': {'lib1.so': []}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.DirectDependents,
+                          'lib1.so')
+
+    def test_direct_depends_double_diamond(self):
+        """Test for the DirectDependents for double diamond graph."""
+
+        libdeps_graph = LibdepsGraph(get_double_diamond_mock_graph())
+
+        expected_result = {"DIRECT_DEPENDS": {"lib9.so": ["lib7.so", "lib8.so"]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.DirectDependents,
+                          'lib9.so')
+
+        expected_result = {"DIRECT_DEPENDS": {"lib6.so": ["lib5.so"]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.DirectDependents,
+                          'lib6.so')
+
+    def test_common_depends_basic(self):
+        """Test for the CommonDependents for basic graph."""
+
+        libdeps_graph = LibdepsGraph(get_basic_mock_graph())
+
+        expected_result = {
+            "COMMON_DEPENDS": {
+                "('lib6.so', 'lib5.so')": ["lib1.so", "lib2.so", "lib3.so", "lib4.so"]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CommonDependents,
+                          ['lib6.so', 'lib5.so'])
+
+        expected_result = {
+            "COMMON_DEPENDS": {
+                "('lib5.so', 'lib6.so')": ["lib1.so", "lib2.so", "lib3.so", "lib4.so"]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CommonDependents,
+                          ['lib5.so', 'lib6.so'])
+
+        expected_result = {"COMMON_DEPENDS": {"('lib5.so', 'lib6.so', 'lib2.so')": ["lib1.so"]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CommonDependents,
+                          ['lib5.so', 'lib6.so', 'lib2.so'])
+
+    def test_common_depends_double_diamond(self):
+        """Test for the CommonDependents for double diamond graph."""
+
+        libdeps_graph = LibdepsGraph(get_double_diamond_mock_graph())
+
+        expected_result = {
+            "COMMON_DEPENDS": {
+                "('lib9.so',)": [
+                    "lib1.so", "lib2.so", "lib3.so", "lib4.so", "lib5.so", "lib6.so", "lib7.so",
+                    "lib8.so"
+                ]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CommonDependents,
+                          ['lib9.so'])
+
+        expected_result = {"COMMON_DEPENDS": {"('lib9.so', 'lib2.so')": ["lib1.so"]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CommonDependents,
+                          ['lib9.so', 'lib2.so'])
+
+        expected_result = {"COMMON_DEPENDS": {"('lib1.so', 'lib4.so', 'lib3.so')": []}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.CommonDependents,
+                          ['lib1.so', 'lib4.so', 'lib3.so'])
+
+    def test_exclude_depends_basic(self):
+        """Test for the ExcludeDependents for basic graph."""
+
+        libdeps_graph = LibdepsGraph(get_basic_mock_graph())
+
+        expected_result = {"EXCLUDE_DEPENDS": {"('lib6.so', 'lib5.so')": []}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.ExcludeDependents,
+                          ['lib6.so', 'lib5.so'])
+
+        expected_result = {"EXCLUDE_DEPENDS": {"('lib3.so', 'lib1.so')": ["lib1.so", "lib2.so"]}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.ExcludeDependents,
+                          ['lib3.so', 'lib1.so'])
+
+        expected_result = {
+            "EXCLUDE_DEPENDS": {
+                "('lib6.so', 'lib1.so', 'lib2.so')": ["lib2.so", "lib3.so", "lib4.so"]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.ExcludeDependents,
+                          ['lib6.so', 'lib1.so', 'lib2.so'])
+
+    def test_exclude_depends_double_diamond(self):
+        """Test for the ExcludeDependents for double diamond graph."""
+
+        libdeps_graph = LibdepsGraph(get_double_diamond_mock_graph())
+
+        expected_result = {
+            "EXCLUDE_DEPENDS": {"('lib6.so', 'lib4.so')": ["lib3.so", "lib4.so", "lib5.so"]}
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.ExcludeDependents,
+                          ['lib6.so', 'lib4.so'])
+
+        expected_result = {"EXCLUDE_DEPENDS": {"('lib2.so', 'lib9.so')": []}}
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.ExcludeDependents,
+                          ['lib2.so', 'lib9.so'])
+
+        expected_result = {
+            "EXCLUDE_DEPENDS": {
+                "('lib8.so', 'lib1.so', 'lib2.so', 'lib3.so', 'lib4.so', 'lib5.so')": [
+                    "lib5.so", "lib6.so"
+                ]
+            }
+        }
+        self.run_analysis(expected_result, libdeps_graph, libdeps.analyzer.ExcludeDependents,
+                          ['lib8.so', 'lib1.so', 'lib2.so', 'lib3.so', 'lib4.so', 'lib5.so'])
+
+    def test_counts_basic(self):
+        """Test counts on basic graph."""
+
+        libdeps_graph = LibdepsGraph(get_basic_mock_graph())
+
+        expected_result = {
+            "NODE": 6, "EDGE": 13, "DIR_EDGE": 7, "TRANS_EDGE": 6, "DIR_PUB_EDGE": 6,
+            "PUB_EDGE": 12, "PRIV_EDGE": 1, "IF_EDGE": 0, "PROG": 0, "LIB": 6
+        }
+        self.run_counts(expected_result, libdeps_graph)
+
+    def test_counts_double_diamond(self):
+        """Test counts on double diamond graph."""
+
+        libdeps_graph = LibdepsGraph(get_double_diamond_mock_graph())
+
+        expected_result = {
+            "NODE": 9, "EDGE": 34, "DIR_EDGE": 10, "TRANS_EDGE": 24, "DIR_PUB_EDGE": 10,
+            "PUB_EDGE": 34, "PRIV_EDGE": 0, "IF_EDGE": 0, "PROG": 0, "LIB": 9
+        }
+        self.run_counts(expected_result, libdeps_graph)
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int num_libs, num_symbols;
+char **libs, **target_symbols;
+FILE *fptr, *popen_fptr;
+
+/**
+ * This struct stores an array of symbols with the size so arrays of
+ * symbols are easily accessed within another array.
+ */
+struct symbol_table {
+    int lines;
+    char** symbols;
+} typedef symbol_table;
+symbol_table* symbol_tables;
+
+/**
+ * Clean up everything before exit.
+ */
+void clean_up() {
+    if (target_symbols != NULL) {
+        for (int symbol = 0; symbol < num_symbols; symbol++) {
+            free(target_symbols[symbol]);
+            target_symbols[symbol] = NULL;
+        }
+    }
+    free(target_symbols);
+    target_symbols = NULL;
+
+    for (int lib = 0; lib < num_libs; lib++) {
+        if (libs != NULL) {
+            free(libs[lib]);
+            libs[lib] = NULL;
+        }
+        if (symbol_tables != NULL) {
+            for (int i = 0; i < symbol_tables[lib].lines; i++) {
+                if (symbol_tables[lib].symbols != NULL) {
+                    free(symbol_tables[lib].symbols[i]);
+                    symbol_tables[lib].symbols[i] = NULL;
+                }
+            }
+            free(symbol_tables[lib].symbols);
+            symbol_tables[lib].symbols = NULL;
+            // not freeing symbol_tables ptr since that is allocated on main's stack
+        }
+    }
+    free(libs);
+    libs = NULL;
+
+    if (popen_fptr != NULL) {
+        pclose(popen_fptr);
+        popen_fptr = NULL;
+    }
+
+    if (fptr != NULL) {
+        fclose(fptr);
+        fptr = NULL;
+    }
+}
+
+/**
+ * Clean up an array of strings.
+ * @param char* output - input arg, the string array to clean up
+ * @param int lines - input arg, how many strings are in the output
+ */
+void clean_up_str_array(char** output, int lines) {
+    if (output != NULL) {
+        for (int i = 0; i < lines; i++) {
+            if (output[i] != NULL) {
+                free(output[i]);
+                output[i] = NULL;
+            }
+        }
+        free(output);
+        output = NULL;
+    }
+}
+
+/**
+ * Generic function for running a command and getting the output
+ * as an array of strings.
+ * @param char* command - input arg, the string which is the command to run
+ * @param int* num_lines - ouput arg, after the command is run, the size of the return  array
+ * @param int* status - ouput arg, after the command is run, the exit status of the command
+ * @return char** - a pointer to an array of strings that is each line of the output
+ */
+char** get_command_output(char* command, int* num_lines, int* status) {
+
+    char buffer[1024];
+    popen_fptr = popen(command, "r");
+    if (popen_fptr == NULL) {
+        clean_up();
+        printf("Failed to run command: %s\n", command);
+        exit(1);
+    }
+
+    char** output = NULL;
+    int index = 0;
+    int line_len = 0;
+
+    while (fgets(buffer, sizeof(buffer), popen_fptr) != NULL) {
+        if (output == NULL) {
+            output = (char**)malloc(sizeof(char*));
+            if (output == NULL) {
+                clean_up();
+                printf("Failed to allocate memory for command array: %d\n", index);
+                exit(1);
+            } else {
+                output[index] = NULL;
+            }
+        }
+
+        int buffer_len = strlen(buffer);
+        char* tmp_str = (char*)realloc(output[index], (line_len + buffer_len) * sizeof(char));
+        if (tmp_str == NULL) {
+            clean_up();
+            printf("Failed to allocate memory for command output\n");
+            exit(1);
+        } else {
+            output[index] = tmp_str;
+        }
+
+        if (buffer[buffer_len - 1] == '\n') {
+            memcpy(output[index] + line_len, buffer, buffer_len);
+            output[index][line_len + buffer_len - 1] = 0;
+            line_len = 0;
+
+            index++;
+            char** tmp = (char**)realloc(output, (index + 1) * sizeof(char*));
+            if (tmp == NULL) {
+                clean_up();
+                printf("Failed to allocate memory for command array: %d\n", index);
+                exit(1);
+            } else {
+                output = tmp;
+                output[index] = NULL;
+            }
+        } else {
+            memcpy(output[index] + line_len, buffer, buffer_len);
+            line_len += buffer_len;
+        }
+    }
+
+    *num_lines = index;
+    *status = pclose(popen_fptr);
+    popen_fptr = NULL;
+    return output;
+}
+
+/**
+ * Get the ldd output, and parsing the path for the dependent library.
+ * @param char* target - input arg, the binary to run ldd on
+ * @param char* ld_libpath - input arg, the LD_LIBRARY_PATH to use to find libraries
+ * @param int* return_size - output arg, the size of the array of strings returned
+ * @return char** - the array of strings for each line of output
+ */
+char** get_ldd(char* target, char* ld_libpath, int* return_size) {
+
+#if __linux__
+    const char* target_ldd_format =
+        "LD_LIBRARY_PATH=%s ldd %s | awk 'NF == 4 {print $3}; NF == 2 {print $1}'";
+#elif __APPLE__
+    const char* target_ldd_format =
+        "for LIB in $(otool -L %s | awk '{gsub(/@rpath\\//, \"\", $1); print $1;}'); "
+        "do for PATHLIB in %s; do if [ -e "
+        "$PATHLIB/$LIB ]; then echo $PATHLIB/$LIB; break; fi; done; done;";
+#endif
+
+    char* target_ldd = (char*)malloc(
+        (strlen(ld_libpath) + strlen(target) + strlen(target_ldd_format)) * sizeof(char));
+    if (target_ldd == NULL) {
+        printf("Failed to allocate memory for target ldd: %s %s\n", target, ld_libpath);
+        clean_up();
+        exit(1);
+    }
+#if __linux__
+    sprintf(target_ldd, target_ldd_format, ld_libpath, target);
+#elif __APPLE__
+    sprintf(target_ldd, target_ldd_format, target, ld_libpath);
+#endif
+
+    int status = -1;
+    char** output = get_command_output(target_ldd, return_size, &status);
+    free(target_ldd);
+    target_ldd = NULL;
+    if (status == 0) {
+        return output;
+    } else {
+        clean_up_str_array(output, *return_size);
+        return NULL;
+    }
+}
+
+/**
+ * Get the nm of undefined symbols for the target library so we can search for
+ * those missing symbols in other libraries.
+ * @param char* target - input arg, the binary to run nm on
+ * @param int* return_size - output arg, the size of the array of strings returned
+ * @return char** - the array of strings for each line of output
+ */
+char** get_target_symbols(char* target, int* return_size) {
+
+#if __linux__
+    const char* target_symbols_format = "nm -D -u %s 2>/dev/null | awk '{print $NF}'";
+#elif __APPLE__
+    const char* target_symbols_format =
+        "nm --dyldinfo-only --undefined-only %s 2>/dev/null | awk '{print $NF}'";
+#endif
+
+    char* target_symbols_command =
+        (char*)malloc((strlen(target) + strlen(target_symbols_format)) * sizeof(char));
+    if (target_symbols_command == NULL) {
+        printf("Failed to allocate memory for target_symbols: %s\n", target);
+        clean_up();
+        exit(1);
+    }
+    sprintf(target_symbols_command, target_symbols_format, target);
+
+    int status;
+    char** output = get_command_output(target_symbols_command, return_size, &status);
+    free(target_symbols_command);
+    target_symbols_command = NULL;
+    if (status == 0) {
+        return output;
+    } else {
+        clean_up_str_array(output, *return_size);
+        return NULL;
+    }
+}
+
+/**
+ * Get the nm of defined symbols for the dependent library so we can search for
+ * matching symbols.
+ * @param char* lib - input arg, the binary to run nm on
+ * @param int* return_size - output arg, the size of the array of strings returned
+ * @return char** - the array of strings for each line of output
+ */
+char** get_lib_symbols(char* lib, int* return_size) {
+
+#if __linux__
+    const char* lib_symbols_format = "nm -D --defined-only %s 2>/dev/null | awk '{print $NF}'";
+#elif __APPLE__
+    const char* lib_symbols_format =
+        "nm --dyldinfo-only --defined-only %s 2>/dev/null | awk '{print $NF}'";
+#endif
+
+    char* lib_symbols = (char*)malloc((strlen(lib) + strlen(lib_symbols_format)) * sizeof(char));
+    if (lib_symbols == NULL) {
+        printf("Failed to allocate memory for lib_symbols: %s\n", lib);
+        clean_up();
+        exit(1);
+    }
+    sprintf(lib_symbols, lib_symbols_format, lib);
+
+    int status;
+    char** output = get_command_output(lib_symbols, return_size, &status);
+    free(lib_symbols);
+    lib_symbols = NULL;
+    if (status == 0) {
+        return output;
+    } else {
+        clean_up_str_array(output, *return_size);
+        return NULL;
+    }
+}
+
+int main(int argc, char** argv) {
+
+    if (argc < 4) {
+        printf("%s: A small tool to resolve undefined symbols in linked dynamic libraries.\n",
+               argv[0]);
+        printf("USAGE : %s <target_shared_library> <LD_LIBRARY_PATH> <output_file.json>\n",
+               argv[0]);
+        exit(1);
+    }
+
+    num_libs = num_symbols = 0;
+    libs = target_symbols = NULL;
+    symbol_tables = NULL;
+    popen_fptr = fptr = NULL;
+
+    // For the given target library first we will extract the libraries
+    // it depends on and any symbols that are undefined that should
+    // be defined in one of those libraries.
+    libs = get_ldd(argv[1], argv[2], &num_libs);
+    target_symbols = get_target_symbols(argv[1], &num_symbols);
+
+    if (num_libs == 0 || num_symbols == 0) {
+        FILE* fptr;
+        fptr = fopen(argv[3], "w");
+        fprintf(fptr, "{}\n");
+        fclose(fptr);
+        fptr = NULL;
+        clean_up();
+        exit(0);
+    }
+
+    // Now pre-emptively collect all the symbols from all the libraries
+    // the target library depends on.
+    symbol_table tmp[num_libs];
+    symbol_tables = tmp;
+    for (int lib = 0; lib < num_libs; lib++) {
+        symbol_tables[lib].lines = 0;
+        symbol_tables[lib].symbols = NULL;
+    }
+    for (int lib = 0; lib < num_libs; lib++) {
+        symbol_tables[lib].symbols = get_lib_symbols(libs[lib], &symbol_tables[lib].lines);
+    }
+
+    // Now loop through all the undefined symbols and discover the first library
+    // that the missing symbol is defined in. Output to target file in json format.
+    FILE* fptr;
+    fptr = fopen(argv[3], "w");
+    fprintf(fptr, "{");
+    int found_symbol_dep = 0;
+    for (int symbol = 0; symbol < num_symbols; symbol++) {
+        for (int lib = 0; lib < num_libs; lib++) {
+            for (int i = 0; i < symbol_tables[lib].lines; i++) {
+                if (strcmp(target_symbols[symbol], symbol_tables[lib].symbols[i]) == 0) {
+                    found_symbol_dep = 1;
+                    fprintf(fptr, "\n\t\"%s\":\"%s\",", target_symbols[symbol], libs[lib]);
+                    goto found_symbol;
+                }
+            }
+        }
+        found_symbol:;
+    }
+    if (found_symbol_dep == 1) {
+        // delete the last comma
+        fseek(fptr, -1, SEEK_CUR);
+    }
+    fprintf(fptr, "\n}\n");
+    fclose(fptr);
+    fptr = NULL;
+
+    clean_up();
+    exit(0);
+}
+#!/usr/bin/env python3
+#
+# Copyright 2020 MongoDB Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be included
+# in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+# LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+# WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+"""
+Graph Analysis Command Line Interface.
+
+A Command line interface to the graph analysis module.
+"""
+
+import argparse
+import textwrap
+import sys
+from pathlib import Path
+import copy
+
+import networkx
+
+import libdeps.analyzer as libdeps_analyzer
+from libdeps.graph import LibdepsGraph, CountTypes, LinterTypes
+
+
+class LinterSplitArgs(argparse.Action):
+    """Custom argument action for checking multiple choice comma separated list."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        """Create a multi choice comma separated list."""
+
+        selected_choices = [v.upper() for v in ''.join(values).split(',') if v]
+        invalid_choices = [
+            choice for choice in selected_choices if choice not in self.valid_choices
+        ]
+        if invalid_choices:
+            raise Exception(
+                f"Invalid choices: {invalid_choices}\nMust use choices from {self.valid_choices}")
+        if CountTypes.ALL.name in selected_choices:
+            selected_choices = copy.copy(self.valid_choices)
+            selected_choices.remove(CountTypes.ALL.name)
+        if selected_choices == []:
+            selected_choices = copy.copy(self.default_choices)
+        setattr(namespace, self.dest, [opt.replace('-', '_') for opt in selected_choices])
+
+
+class CountSplitArgs(LinterSplitArgs):
+    """Special case of common custom arg action for Count types."""
+
+    valid_choices = [name[0].replace('_', '-') for name in CountTypes.__members__.items()]
+    default_choices = [
+        name[0] for name in CountTypes.__members__.items() if name[0] != CountTypes.ALL.name
+    ]
+
+
+class LintSplitArgs(LinterSplitArgs):
+    """Special case of common custom arg action for Count types."""
+
+    valid_choices = [name[0].replace('_', '-') for name in LinterTypes.__members__.items()]
+    default_choices = [LinterTypes.PUBLIC_UNUSED.name]
+
+
+class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+    """Custom arg help formatter for modifying the defaults printed for the custom list action."""
+
+    @staticmethod
+    def _get_help_length(enum_type):
+        max_length = max([len(name[0]) for name in enum_type.__members__.items()])
+        help_text = {}
+        for name in enum_type.__members__.items():
+            help_text[name[0]] = name[0].lower() + ('-' * (max_length - len(name[0]))) + ": "
+        return help_text
+
+    def _get_help_string(self, action):
+
+        if isinstance(action, CountSplitArgs):
+            help_text = self._get_help_length(CountTypes)
+            return textwrap.dedent(f"""\
+                {action.help}
+                default: all, choices:
+                    {help_text[CountTypes.ALL.name]}perform all counts
+                    {help_text[CountTypes.NODE.name]}count nodes
+                    {help_text[CountTypes.EDGE.name]}count edges
+                    {help_text[CountTypes.DIR_EDGE.name]}count edges declared directly on a node
+                    {help_text[CountTypes.TRANS_EDGE.name]}count edges induced by direct public edges
+                    {help_text[CountTypes.DIR_PUB_EDGE.name]}count edges that are directly public
+                    {help_text[CountTypes.PUB_EDGE.name]}count edges that are public
+                    {help_text[CountTypes.PRIV_EDGE.name]}count edges that are private
+                    {help_text[CountTypes.IF_EDGE.name]}count edges that are interface
+                    {help_text[CountTypes.LIB.name]}count library nodes
+                    {help_text[CountTypes.PROG.name]}count program nodes
+                """)
+        elif isinstance(action, LintSplitArgs):
+            help_text = self._get_help_length(LinterTypes)
+            return textwrap.dedent(f"""\
+                {action.help}
+                default: all, choices:
+                    {help_text[LinterTypes.ALL.name]}perform all linters
+                    {help_text[LinterTypes.PUBLIC_UNUSED.name]}find unnecessary public libdeps
+                """)
+        return super()._get_help_string(action)
+
+
+def setup_args_parser():
+    """Add and parse the input args."""
+
+    parser = argparse.ArgumentParser(formatter_class=CustomFormatter)
+
+    parser.add_argument('--graph-file', type=str, action='store', help="The LIBDEPS graph to load.",
+                        default="build/opt/libdeps/libdeps.graphml")
+
+    parser.add_argument('--format', choices=['pretty', 'json'], default='pretty',
+                        help="The output format type.")
+
+    parser.add_argument('--build-data', choices=['on', 'off'], default='on',
+                        help="Print the invocation and git hash used to build the graph")
+
+    parser.add_argument('--counts', metavar='COUNT,', nargs='*', action=CountSplitArgs,
+                        default=CountSplitArgs.default_choices,
+                        help="Output various counts from the graph. Comma separated list.")
+
+    parser.add_argument('--lint', metavar='LINTER,', nargs='*', action=LintSplitArgs,
+                        default=LintSplitArgs.default_choices,
+                        help="Perform various linters on the graph. Comma separated list.")
+
+    parser.add_argument('--direct-depends', action='append', default=[],
+                        help="Print the nodes which depends on a given node.")
+
+    parser.add_argument('--common-depends', nargs='+', action='append', default=[],
+                        help="Print the nodes which have a common dependency on all N nodes.")
+
+    parser.add_argument(
+        '--exclude-depends', nargs='+', action='append', default=[], help=
+        "Print nodes which depend on the first node of N nodes, but exclude all nodes listed there after."
+    )
+
+    parser.add_argument('--graph-paths', nargs='+', action='append', default=[],
+                        help="[from_node] [to_node]: Print all paths between 2 nodes.")
+
+    parser.add_argument(
+        '--critical-edges', nargs='+', action='append', default=[], help=
+        "[from_node] [to_node]: Print edges between two nodes, which if removed would break the dependency between those "
+        + "nodes,.")
+
+    parser.add_argument(
+        '--indegree-one', action='store_true', default=False, help=
+        "Find candidate nodes for merging by searching the graph for nodes with only one node which depends on them."
+    )
+
+    args = parser.parse_args()
+
+    for arg_list in args.graph_paths:
+        if len(arg_list) != 2:
+            parser.error(
+                f'Must pass two args for --graph-paths, [from_node] [to_node], not {arg_list}')
+
+    for arg_list in args.critical_edges:
+        if len(arg_list) != 2:
+            parser.error(
+                f'Must pass two args for --critical-edges, [from_node] [to_node], not {arg_list}')
+
+    return parser.parse_args()
+
+
+def strip_build_dir(build_dir, node):
+    """Small util function for making args match the graph paths."""
+
+    return str(Path(node).relative_to(build_dir))
+
+
+def strip_build_dirs(build_dir, nodes):
+    """Small util function for making a list of nodes match graph paths."""
+
+    return [strip_build_dir(build_dir, node) for node in nodes]
+
+
+def load_graph_data(graph_file, output_format):
+    """Load a graphml file."""
+
+    if output_format == "pretty":
+        sys.stdout.write("Loading graph data...")
+        sys.stdout.flush()
+    graph = networkx.read_graphml(graph_file)
+    if output_format == "pretty":
+        sys.stdout.write("Loaded!\n\n")
+    return graph
+
+
+def main():
+    """Perform graph analysis based on input args."""
+
+    args = setup_args_parser()
+    graph = load_graph_data(args.graph_file, args.format)
+    libdeps_graph = LibdepsGraph(graph=graph)
+    build_dir = libdeps_graph.graph['build_dir']
+
+    if libdeps_graph.graph['graph_schema_version'] == 1:
+        libdeps_graph = networkx.reverse_view(libdeps_graph)
+
+    analysis = libdeps_analyzer.counter_factory(libdeps_graph, args.counts)
+
+    for analyzer_args in args.direct_depends:
+        analysis.append(
+            libdeps_analyzer.DirectDependents(libdeps_graph,
+                                              strip_build_dir(build_dir, analyzer_args)))
+
+    for analyzer_args in args.common_depends:
+        analysis.append(
+            libdeps_analyzer.CommonDependents(libdeps_graph,
+                                              strip_build_dirs(build_dir, analyzer_args)))
+
+    for analyzer_args in args.exclude_depends:
+        analysis.append(
+            libdeps_analyzer.ExcludeDependents(libdeps_graph,
+                                               strip_build_dirs(build_dir, analyzer_args)))
+
+    for analyzer_args in args.graph_paths:
+        analysis.append(
+            libdeps_analyzer.GraphPaths(libdeps_graph, strip_build_dir(build_dir, analyzer_args[0]),
+                                        strip_build_dir(build_dir, analyzer_args[1])))
+
+    for analyzer_args in args.critical_edges:
+        analysis.append(
+            libdeps_analyzer.CriticalEdges(libdeps_graph,
+                                           strip_build_dir(build_dir, analyzer_args[0]),
+                                           strip_build_dir(build_dir, analyzer_args[1])))
+
+    if args.indegree_one:
+        analysis.append(libdeps_analyzer.InDegreeOne(libdeps_graph))
+
+    analysis += libdeps_analyzer.linter_factory(libdeps_graph, args.lint)
+
+    if args.build_data:
+        analysis.append(libdeps_analyzer.BuildDataReport(libdeps_graph))
+
+    ga = libdeps_analyzer.LibdepsGraphAnalysis(analysis)
+
+    if args.format == 'pretty':
+        ga_printer = libdeps_analyzer.GaPrettyPrinter(ga)
+    elif args.format == 'json':
+        ga_printer = libdeps_analyzer.GaJsonPrinter(ga)
+    else:
+        return
+
+    ga_printer.print()
+
+
+if __name__ == "__main__":
+    main()
+
+#!/usr/bin/env python3
+#
+# Copyright 2020 MongoDB Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be included
+# in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+# LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+# WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+"""
+Libdeps Graph Visualization Tool.
+
+Starts a web service which creates a UI for interacting and examing the libdeps graph.
+The web service front end consist of React+Redux for the framework, SocketIO for backend
+communication, and Material UI for the GUI. The web service back end use flask and socketio.
+
+This script will automatically install the npm modules, and build and run the production
+web service if not debug.
+"""
+
+import os
+from pathlib import Path
+import argparse
+import shutil
+import subprocess
+import platform
+import threading
+import copy
+import textwrap
+
+import flask
+from graph_visualizer_web_stack.flask.flask_backend import BackendServer
+
+
+def get_args():
+    """Create the argparse and return passed args."""
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        '--debug', action='store_true', help=
+        'Whether or not to run debug server. Note for non-debug, you must build the production frontend with "npm run build".'
+    )
+    parser.add_argument(
+        '--graphml-dir', type=str, action='store', help=
+        "Directory where libdeps graphml files live. The UI will allow selecting different graphs from this location",
+        default="build/opt")
+
+    parser.add_argument('--frontend-host', type=str, action='store',
+                        help="Hostname where the front end will run.", default="localhost")
+
+    parser.add_argument('--backend-host', type=str, action='store',
+                        help="Hostname where the back end will run.", default="localhost")
+
+    parser.add_argument('--frontend-port', type=str, action='store',
+                        help="Port where the front end will run.", default="3000")
+
+    parser.add_argument('--backend-port', type=str, action='store',
+                        help="Port where the back end will run.", default="5000")
+
+    parser.add_argument('--launch', choices=['frontend', 'backend', 'both'], default='both',
+                        help="Specifies which part of the web service to launch.")
+
+    return parser.parse_args()
+
+
+def execute_and_read_stdout(cmd, cwd, env):
+    """Execute passed command and get realtime output."""
+
+    popen = subprocess.Popen(cmd, stdout=subprocess.PIPE, cwd=str(cwd), env=env,
+                             universal_newlines=True)
+    for stdout_line in iter(popen.stdout.readline, ""):
+        yield stdout_line
+    popen.stdout.close()
+    return_code = popen.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, cmd)
+
+
+def check_node(node_check, cwd):
+    """Check node version and install npm packages."""
+
+    status, output = subprocess.getstatusoutput(node_check)
+    if status != 0 or not output.split('\n')[-1].startswith('v12'):
+        print(
+            textwrap.dedent(f"""\
+            Failed to get node version 12 from 'node -v':
+            output: '{output}'
+            Perhaps run 'source {cwd}/setup_node_env.sh install'"""))
+        exit(1)
+
+    node_modules = cwd / 'node_modules'
+
+    if not node_modules.exists():
+        print(
+            textwrap.dedent(f"""\
+            {node_modules} not found, you need to run 'npm install' in {cwd}
+            Perhaps run 'source {cwd}/setup_node_env.sh install'"""))
+        exit(1)
+
+
+def start_backend(web_service_info, debug):
+    """Start the backend in debug mode."""
+
+    web_service_info['socketio'].run(app=web_service_info['app'],
+                                     host=web_service_info['backend_host'],
+                                     port=web_service_info['backend_port'], debug=debug)
+
+
+def start_frontend_thread(web_service_info, npm_command, debug):
+    """Start the backend in debug mode."""
+    env = os.environ.copy()
+    backend_url = f"http://{web_service_info['backend_host']}:{web_service_info['backend_port']}"
+    env['REACT_APP_API_URL'] = backend_url
+
+    if debug:
+        env['HOST'] = web_service_info['frontend_host']
+        env['PORT'] = web_service_info['frontend_port']
+
+        for output in execute_and_read_stdout(npm_command, cwd=web_service_info['cwd'], env=env):
+            print(output, end="")
+    else:
+        for output in execute_and_read_stdout(npm_command, cwd=web_service_info['cwd'], env=env):
+            print(output, end="")
+
+        env['PATH'] = 'node_modules/.bin:' + env['PATH']
+        react_frontend = subprocess.Popen([
+            'http-server',
+            'build',
+            '-a',
+            web_service_info['frontend_host'],
+            '-p',
+            web_service_info['frontend_port'],
+            f"--cors={backend_url}",
+        ], env=env, cwd=str(web_service_info['cwd']))
+        stdout, stderr = react_frontend.communicate()
+        print(f"frontend stdout: '{stdout}'\n\nfrontend stderr: '{stderr}'")
+
+
+def main():
+    """Start up the server."""
+
+    args = get_args()
+
+    # TODO: add https command line option and support
+    server = BackendServer(graphml_dir=args.graphml_dir,
+                           frontend_url=f"http://{args.frontend_host}:{args.frontend_port}")
+
+    app, socketio = server.get_app()
+    cwd = Path(__file__).parent / 'graph_visualizer_web_stack'
+
+    web_service_info = {
+        'app': app,
+        'socketio': socketio,
+        'cwd': cwd,
+        'frontend_host': args.frontend_host,
+        'frontend_port': args.frontend_port,
+        'backend_host': args.backend_host,
+        'backend_port': args.backend_port,
+    }
+
+    node_check = 'node -v'
+    npm_start = ['npm', 'start']
+    npm_build = ['npm', 'run', 'build']
+
+    check_node(node_check, cwd)
+
+    frontend_thread = None
+    if args.launch in ['frontend', 'both']:
+        if args.debug:
+            npm_command = npm_start
+        else:
+            npm_command = npm_build
+
+        frontend_thread = threading.Thread(target=start_frontend_thread,
+                                           args=(web_service_info, npm_command, args.debug))
+        frontend_thread.start()
+
+    if args.launch in ['backend', 'both']:
+        start_backend(web_service_info, args.debug)
+
+    if frontend_thread:
+        frontend_thread.join()
+
+
+if __name__ == "__main__":
+    main()
+
+# Libdeps Graph Analysis Tools
+
+The Libdeps Graph analysis tools perform analysis and queries on graph representing the libdeps dependencies in the mongodb server builds.
+
+## Generating the graph file
+
+The scons build can create the graph files for analysis. To build the graphml file run the build with this minimal set of args required:
+
+    python3 buildscripts/scons.py --link-model=dynamic --build-tools=next generate-libdeps-graph
+
+The target `generate-libdeps-graph` has special meaning and will turn on extra build items to generate the graph. This target will build everything so that the graph is fully representative of the build. The graph file by default will be found at `build/opt/libdeps/libdeps.graphml` (where `build/opt` is the `$BUILD_DIR`).
+
+## Command Line Tool
+
+The Command Line tool will process a single graph file based off a list of input args. To see the full list of args run the command:
+
+    python3 buildscripts/libdeps/gacli.py --help
+
+By default it will performs some basic operations and print the output in human readable format:
+
+    python3.8 buildscripts/libdeps/gacli.py --graph-file build/opt/libdeps/libdeps.graphml
+
+Which will give an output similar to this:
+
+    Loading graph data...Loaded!
+
+    Graph built from git hash:
+    19da729e2696bbf15d3a35c340281e4385069b88
+
+    Graph Schema version:
+    1
+
+    Build invocation:
+    "/usr/bin/python3.8" "buildscripts/scons.py" "--variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars" "--dbg=on" "--opt=on" "--enable-free-mon=on" "--enable-http-client=on" "--cache=all" "--cache-dir=/home/ubuntu/scons-cache" "--install-action=hardlink" "--link-model=dynamic" "--build-tools=next" "--ssl" "--modules=enterprise" "CCACHE=ccache" "ICECC=icecc" "-j50" "generate-libdeps-graph"
+
+    Nodes in Graph: 859
+    Edges in Graph: 90843
+    Direct Edges in Graph: 5808
+    Transitive Edges in Graph: 85035
+    Direct Public Edges in Graph: 3511
+    Public Edges in Graph: 88546
+    Private Edges in Graph: 2272
+    Interface Edges in Graph: 25
+    Shim Nodes in Graph: 20
+    Program Nodes in Graph: 134
+    Library Nodes in Graph: 725
+
+    LibdepsLinter: PUBLIC libdeps that could be PRIVATE: 0
+
+## Graph Visualizer Tool
+
+The graph visualizer tools starts up a web service to provide a frontend GUI to navigating and examining the graph files. The Visualizer used a Python Flask backend and React Javascript frontend. You will need to install the libdeps requirements file to python to run the backend:
+
+    python3 -m pip install -r etc/pip/libdeps-requirements.txt
+
+For installing the dependencies for the frontend, you will need node >= 12.0.0 and npm installed and in the PATH. To install the dependencies navigate to directory where package.json lives, and run:
+
+    cd buildscripts/libdeps/graph_visualizer_web_stack && npm install
+
+Alternatively if you are on linux, you can use the setup_node_env.sh script to automatically download node 12 and npm, setup the local environment and install the dependencies. Run the command:
+
+    buildscripts/libdeps/graph_visualizer_web_stack/setup_node_end.sh install
+
+Assuming you are on a remote workstation and using defaults, you will need to make ssh tunnels to the web service to access the service in your local browser. The frontend and backend both use a port (this case 3000 is the frontend and 5000 is the backend), and the default host is localhost, so you will need to open two tunnels so the frontend running in your local web browser can communicate with the backend. If you are using the default host and port the tunnel command will look like this:
+
+    ssh -L 3000:localhost:3000 -L 5000:localhost:5000 ubuntu@workstation.hostname
+
+Next we need to start the web service. It will require you to pass a directory where it will search for `.graphml` files which contain the graph data for various commits:
+
+    python3 buildscripts/libdeps/graph_visualizer.py --graphml-dir build/opt/libdeps
+
+The script will download nodejs, use npm to install all required packages, launch the backend and then build the optimized production frontend. You can supply the `--debug` argument to work in development load which allows real time updates as files are modified.
+
+After the server has started up, it should notify you via the terminal that you can access it at http://localhost:3000 locally in your browser.
+
+3 removed shim node property
+2 flipped edge direction in graph file data
+1 initial schema
